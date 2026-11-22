@@ -407,10 +407,12 @@ class Mc5000(SkyRcDevice[Mc5000State]):
             return None
 
     async def get_history(self, channel: int) -> Mc5000History | None:
-        """Download the voltage curve the charger keeps for a running slot.
+        """Download the voltage curve the charger keeps for a slot's current run.
 
-        The charger only answers while the slot is running; returns None
-        otherwise or if a page goes missing.
+        The curve stays readable after the run finishes on its own (until the
+        next run starts), but not after a manual stop or for an empty slot.
+        The charger keeps about 300 samples and doubles the interval as the run
+        grows. Returns None when it doesn't answer or a page goes missing.
         """
         if not 0 <= channel < MC3000_CHANNEL_COUNT:
             raise ValueError("channel must be 0-3")

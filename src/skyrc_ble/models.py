@@ -411,7 +411,7 @@ class Mc5000DeviceInfo:
 
 @dataclass(frozen=True)
 class Mc5000History:
-    """Voltage curve the charger keeps for a running slot (command 0x98)."""
+    """Voltage curve kept for a slot's current or last finished run (0x98)."""
 
     channel: int  # 0-3
     interval: int  # seconds per sample
