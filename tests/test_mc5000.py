@@ -202,7 +202,11 @@ def test_parse_usb_status():
 
 
 def test_device_info():
-    from skyrc_ble.mc5000 import device_info_payload, frame_checksum_ok, parse_device_info
+    from skyrc_ble.mc5000 import (
+        device_info_payload,
+        frame_checksum_ok,
+        parse_device_info,
+    )
 
     assert frame_checksum_ok(DEVICE_INFO_FRAME)
     info = parse_device_info(DEVICE_INFO_FRAME)
