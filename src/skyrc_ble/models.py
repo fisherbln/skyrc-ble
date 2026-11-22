@@ -407,3 +407,12 @@ class Mc5000DeviceInfo:
     firmware: str  # e.g. "2.02"
     hardware: str  # e.g. "2"
     serial_code: str = ""  # 32 hex chars; what SkyRC's update server is asked about
+
+
+@dataclass(frozen=True)
+class Mc5000History:
+    """Voltage curve the charger keeps for a running slot (command 0x98)."""
+
+    channel: int  # 0-3
+    interval: int  # seconds per sample
+    voltages: tuple[float, ...]  # volts, oldest first

@@ -25,6 +25,7 @@ from .models import (
     Mc5000ChannelStatus,
     Mc5000DeviceInfo,
     Mc5000Error,
+    Mc5000History,
     Mc5000Operation,
     Mc5000Program,
     Mc5000Settings,
@@ -46,6 +47,8 @@ CMD_DEVICE_INFO = 0x57
 CMD_SET_SETTINGS = 0x95
 CMD_GET_SETTINGS = 0x96
 CMD_USB_STATUS = 0x9B
+CMD_HISTORY = 0x98
+HISTORY_TIMEOUT = 10.0
 
 PROGRAM_PAYLOAD_SIZE = 40
 RESPONSE_TIMEOUT = 3.0
@@ -253,6 +256,32 @@ def parse_device_info(frame: bytes) -> Mc5000DeviceInfo:
     )
 
 
+def parse_history(frames: list[bytes]) -> Mc5000History:
+    """Join the pages of a 0x98 reply into one curve.
+
+    Each page: ``0f LEN 98 <mask> <pages> <page> <interval> <mV lo> <mV hi> ...``.
+    """
+    if not frames:
+        raise ValueError("No history pages")
+    pages = sorted(frames, key=lambda f: f[5])
+    total = pages[0][4]
+    if [f[5] for f in pages] != list(range(1, total + 1)):
+        raise ValueError(f"History pages incomplete: got {[f[5] for f in pages]} of {total}")
+    mask = pages[0][3]
+    if mask not in (1, 2, 4, 8):
+        raise ValueError(f"Bad channel mask {mask}")
+    voltages: list[float] = []
+    for frame in pages:
+        if frame[2] != CMD_HISTORY or frame[3] != mask:
+            raise ValueError("Mixed history pages")
+        body = frame[7:-1]
+        voltages.extend(
+            int.from_bytes(body[i:i + 2], "little") / 1000 for i in range(0, len(body) - 1, 2)
+        )
+    return Mc5000History(channel=mask.bit_length() - 1, interval=pages[0][6],
+                         voltages=tuple(voltages))
+
+
 def device_info_payload(address: str) -> bytes:
     """0x57 payload: the charger's Bluetooth address, byte-reversed."""
     parts = address.split(":")
@@ -273,6 +302,7 @@ class Mc5000(SkyRcDevice[Mc5000State]):
         self._buffer = b""
         self._expected_response_command: int | None = None
         self._last_response: bytes | None = None
+        self._pages: list[bytes] | None = None
 
     async def connect(self) -> bool:
         """Connect to the device."""
@@ -376,6 +406,27 @@ class Mc5000(SkyRcDevice[Mc5000State]):
             _LOGGER.warning("%s: %s", self.name, error)
             return None
 
+    async def get_history(self, channel: int) -> Mc5000History | None:
+        """Download the voltage curve the charger keeps for a running slot.
+
+        The charger only answers while the slot is running; returns None
+        otherwise or if a page goes missing.
+        """
+        if not 0 <= channel < MC3000_CHANNEL_COUNT:
+            raise ValueError("channel must be 0-3")
+        self._pages = []
+        try:
+            await self._request(CMD_HISTORY, [1 << channel], timeout=HISTORY_TIMEOUT)
+            frames, self._pages = self._pages, None
+        finally:
+            self._pages = None
+        try:
+            return parse_history(frames)
+        except ValueError as error:
+            if frames:
+                _LOGGER.warning("%s: %s", self.name, error)
+            return None
+
     async def _request(
         self,
         command: int,
@@ -441,10 +492,16 @@ class Mc5000(SkyRcDevice[Mc5000State]):
             else:
                 self._state.channels[channel] = data
         elif command not in (CMD_HELLO, CMD_START_PROGRAM, CMD_STOP, CMD_DEVICE_INFO,
-                             CMD_SET_SETTINGS, CMD_GET_SETTINGS, CMD_USB_STATUS):
+                             CMD_SET_SETTINGS, CMD_GET_SETTINGS, CMD_USB_STATUS,
+                             CMD_HISTORY):
             _LOGGER.debug("%s: Unhandled packet type 0x%02x", self.name, command)
         if command == self._expected_response_command:
             self._last_response = frame
+            if command == CMD_HISTORY and self._pages is not None and len(frame) > 7:
+                # The curve arrives as several pages for one request.
+                self._pages.append(frame)
+                if frame[5] < frame[4]:
+                    return
             self._packet_received.set()
         elif command == CMD_HELLO and self._expected_response_command is not None:
             # The hello replaces the reply to the first frame after connecting.

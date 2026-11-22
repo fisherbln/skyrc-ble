@@ -218,3 +218,45 @@ def test_device_info():
     )
     with pytest.raises(ValueError):
         device_info_payload("1A2B3C4D-0000-0000-0000-000000000000")
+
+
+# The three pages one 0x98 request returned 228 s into an Eneloop charge
+# (slot 1, 0.5 A) on 2026-11-22.
+HISTORY_PAGES = [bytes.fromhex(h) for h in (
+    "0fce9801030101810581058105810581058105810581058105810581058105810581058105810581058105810581058105660556054c0546054305410540053f053f053f053f053f053f053f053f053f053f053f053f053f053f054105420543054305430543054305430543054305430543054305430543054305430543054305430543054605480549054905490549054905490549054905490549054905490549054905490549054905490549054b054d054e054e054e054e054e054e054e054e054e054e054e054e054e054e05fc",
+    "0fce98010302014e054e054e054e054e055005510552055205520552055205520552055205520552055205520552055205520552055205520554055605570557055705570557055705570557055705570557055705570557055705570557055705570559055b055c055c055c055c055c055c055c055c055c055c055c055c055c055c055c055c055c055c055c055e0560056105610561056105610561056105610561056105610561056105610561056105610561056105630564056505650565056505650565056505650565056505cf",
+    "0f3a98010303016505650565056505650565056505650565056705680568056805680568056805680568056805680568056805680568056805680596",
+)]
+
+
+def test_parse_history_pages():
+    from skyrc_ble.mc5000 import frame_checksum_ok, parse_history
+
+    assert all(frame_checksum_ok(f) for f in HISTORY_PAGES)
+    h = parse_history(list(reversed(HISTORY_PAGES)))  # order doesn't matter
+    assert h.channel == 0 and h.interval == 1
+    assert len(h.voltages) == 226
+    assert h.voltages[0] == 1.409 and min(h.voltages) == 1.343
+    assert h.voltages[-1] == 1.384
+    with pytest.raises(ValueError):
+        parse_history(HISTORY_PAGES[:2])  # page 3 missing
+
+
+@pytest.mark.asyncio
+async def test_get_history_collects_all_pages():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from skyrc_ble import Mc5000
+
+    charger = Mc5000(MagicMock(address="DC:23:53:64:36:40", name="#Charger-4036"))
+    client = MagicMock()
+
+    async def write(_uuid, frame, response=False):
+        for page in HISTORY_PAGES:
+            charger._handle_frame(page)
+
+    client.write_gatt_char = AsyncMock(side_effect=write)
+    charger._client = client
+    history = await charger.get_history(0)
+    assert history is not None and len(history.voltages) == 226
+    assert client.write_gatt_char.await_args.args[1] == bytes.fromhex("0f03980199")
