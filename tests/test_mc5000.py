@@ -149,3 +149,67 @@ async def test_mc5000_request_after_disconnect_raises_bleak_error(mock_mc5000_bl
     mc5000._client = None  # what the disconnected callback does
     with pytest.raises(BleakError):
         await mc5000.stop_charge(0)
+
+
+# Frames captured from a real MC5000 (firmware 2.02) on 2026-11-22.
+SETTINGS_FRAME = bytes.fromhex("0f0996080001000101 00a1".replace(" ", ""))
+SETTINGS_AFTER_WRITE = bytes.fromhex("0f09960800010003010 0a3".replace(" ", ""))
+SET_ACK = bytes.fromhex("0f049510 01a6".replace(" ", ""))
+DEVICE_INFO_FRAME = bytes.fromhex("0f1357003130303231340400000000020202 00ce57".replace(" ", ""))
+USB_IDLE = bytes.fromhex("0f109b0000000000000000000000000000 9b".replace(" ", ""))
+USB_PHONE = bytes.fromhex("0f109b0002087a3ba0000000e60000002f0f")
+
+
+def test_parse_settings():
+    from skyrc_ble.mc5000 import frame_checksum_ok, parse_settings
+
+    assert frame_checksum_ok(SETTINGS_FRAME)
+    s = parse_settings(SETTINGS_FRAME)
+    assert (s.keypress_beep, s.notify_beep, s.completion_repeat) == (0, 1, False)
+    assert (s.backlight, s.warning, s.screen_timeout) == (1, 1, 0)
+    assert parse_settings(SETTINGS_AFTER_WRITE).backlight == 3
+
+
+def test_build_settings_payload_matches_hardware_test():
+    from dataclasses import replace
+
+    from skyrc_ble.mc5000 import build_frame, build_settings_payload, parse_settings
+
+    s = replace(parse_settings(SETTINGS_FRAME), backlight=3)
+    payload = build_settings_payload(s)
+    # The exact payload that changed the backlight on the real charger.
+    assert payload.hex(" ") == "00 00 01 00 03 01 00 00 00 00 00 00 00 00 00 00 00"
+    assert build_frame(0x95, payload)[:3] == bytes([0x0F, 19, 0x95])
+    with pytest.raises(ValueError):
+        build_settings_payload(replace(s, backlight=0))
+    with pytest.raises(ValueError):
+        build_settings_payload(replace(s, screen_timeout=7))
+    with pytest.raises(ValueError):
+        build_settings_payload(replace(s, keypress_beep=4))
+
+
+def test_parse_usb_status():
+    from skyrc_ble.mc5000 import frame_checksum_ok, parse_usb_status
+
+    assert frame_checksum_ok(USB_PHONE)
+    u = parse_usb_status(USB_PHONE)
+    assert u.status == 2
+    assert u.current == 2.17 and u.voltage == 15.264
+    assert u.energy == 0.23 and u.runtime == 47
+    assert u.power == 33.12
+    idle = parse_usb_status(USB_IDLE)
+    assert (idle.status, idle.power, idle.runtime) == (0, 0, 0)
+
+
+def test_device_info():
+    from skyrc_ble.mc5000 import device_info_payload, frame_checksum_ok, parse_device_info
+
+    assert frame_checksum_ok(DEVICE_INFO_FRAME)
+    info = parse_device_info(DEVICE_INFO_FRAME)
+    assert info.model_code == "100214"
+    assert info.firmware == "2.02" and info.hardware == "2"
+    assert device_info_payload("DC:23:53:64:36:40").hex(" ") == (
+        "00 40 36 64 53 23 dc 00 00 00 00 00 00 00 00 00 00"
+    )
+    with pytest.raises(ValueError):
+        device_info_payload("1A2B3C4D-0000-0000-0000-000000000000")

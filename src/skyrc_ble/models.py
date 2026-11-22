@@ -359,3 +359,50 @@ class Mc5000Program:
     turbo: int = 0
     storage_voltage: int = 0
     eneloop_type: int = 0
+
+
+# Option values used by the MC5000's system settings (as the SkyRC app and the
+# charger's own System Settings menu name them).
+MC5000_BEEP_LEVELS = ("off", "low", "medium", "high")  # 0-3
+MC5000_BACKLIGHT_LEVELS = {1: "low", 2: "medium", 3: "high"}
+MC5000_SCREEN_TIMEOUTS = (0, 1, 3, 5, 10, 15, 30, 60, 120)  # minutes, 0 = off
+
+
+@dataclass(frozen=True)
+class Mc5000Settings:
+    """System settings (command 0x96 to read, 0x95 to write).
+
+    ``warning`` has no item in the charger's menu; it is kept as read so a
+    write doesn't change it.
+    """
+
+    keypress_beep: int  # 0 off, 1 low, 2 medium, 3 high
+    notify_beep: int  # error/completion beep volume, 0-3
+    completion_repeat: bool  # False = once, True = repeat every 30 min
+    backlight: int  # 1 low, 2 medium, 3 high
+    warning: int
+    screen_timeout: int | None  # minutes (0 = off); None if not reported
+
+
+@dataclass(frozen=True)
+class Mc5000UsbStatus:
+    """USB-C PD port (command 0x9B). Status 0 = idle; 2 seen while powering a phone."""
+
+    status: int
+    current: float  # A
+    voltage: float  # V
+    energy: float  # Wh delivered this session
+    runtime: int  # seconds
+
+    @property
+    def power(self) -> float:
+        return round(self.voltage * self.current, 2)
+
+
+@dataclass(frozen=True)
+class Mc5000DeviceInfo:
+    """Device information (command 0x57)."""
+
+    model_code: str  # "100214" for the MC5000
+    firmware: str  # e.g. "2.02"
+    hardware: str  # e.g. "2"

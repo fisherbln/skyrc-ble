@@ -23,10 +23,13 @@ from .models import (
     Mc5000BatteryType,
     Mc5000ChannelData,
     Mc5000ChannelStatus,
+    Mc5000DeviceInfo,
     Mc5000Error,
     Mc5000Operation,
     Mc5000Program,
+    Mc5000Settings,
     Mc5000State,
+    Mc5000UsbStatus,
     mc5000_operation_code,
     mc5000_operation_from_code,
 )
@@ -39,6 +42,10 @@ CMD_HELLO = 0x06
 CMD_GET_CHANNEL_DATA = 0x91
 CMD_START_PROGRAM = 0x94
 CMD_STOP = 0xFE
+CMD_DEVICE_INFO = 0x57
+CMD_SET_SETTINGS = 0x95
+CMD_GET_SETTINGS = 0x96
+CMD_USB_STATUS = 0x9B
 
 PROGRAM_PAYLOAD_SIZE = 40
 RESPONSE_TIMEOUT = 3.0
@@ -180,6 +187,82 @@ def parse_channel_data(frame: bytes) -> tuple[int, Mc5000ChannelData]:
     return channel, data
 
 
+def parse_settings(frame: bytes) -> Mc5000Settings:
+    """Parse a 0x96 settings reply."""
+    if len(frame) < 10 or frame[2] != CMD_GET_SETTINGS:
+        raise ValueError(f"Not an MC5000 settings frame: {frame.hex()}")
+    # Byte 9 (screen timeout) is only there when the frame carries it; the
+    # last byte is always the checksum.
+    timeout = frame[9] if len(frame) >= 11 else None
+    return Mc5000Settings(
+        keypress_beep=frame[4],
+        notify_beep=frame[5],
+        completion_repeat=bool(frame[6]),
+        backlight=frame[7],
+        warning=frame[8],
+        screen_timeout=timeout,
+    )
+
+
+def build_settings_payload(settings: Mc5000Settings) -> bytes:
+    """17-byte payload for 0x95, laid out as the SkyRC app sends it."""
+    from .models import MC5000_SCREEN_TIMEOUTS
+
+    for name, value, top in (("keypress_beep", settings.keypress_beep, 3),
+                             ("notify_beep", settings.notify_beep, 3)):
+        if not 0 <= value <= top:
+            raise ValueError(f"{name} must be 0-{top}")
+    if settings.backlight not in (1, 2, 3):
+        raise ValueError("backlight must be 1-3")
+    if settings.screen_timeout is not None and settings.screen_timeout not in MC5000_SCREEN_TIMEOUTS:
+        raise ValueError(f"screen_timeout must be one of {MC5000_SCREEN_TIMEOUTS}")
+    payload = bytearray(17)
+    payload[1] = settings.keypress_beep
+    payload[2] = settings.notify_beep
+    payload[3] = int(settings.completion_repeat)
+    payload[4] = settings.backlight
+    payload[5] = settings.warning & 0xFF
+    payload[6] = settings.screen_timeout or 0
+    return bytes(payload)
+
+
+def parse_usb_status(frame: bytes) -> Mc5000UsbStatus:
+    """Parse a 0x9B USB-C PD status reply."""
+    if len(frame) < 18 or frame[2] != CMD_USB_STATUS:
+        raise ValueError(f"Not an MC5000 USB status frame: {frame.hex()}")
+    return Mc5000UsbStatus(
+        status=frame[4],
+        current=int.from_bytes(frame[5:7], "big") / 1000,
+        voltage=int.from_bytes(frame[7:9], "big") / 1000,
+        energy=int.from_bytes(frame[9:13], "big") / 1000,
+        runtime=int.from_bytes(frame[13:17], "big"),
+    )
+
+
+def parse_device_info(frame: bytes) -> Mc5000DeviceInfo:
+    """Parse a 0x57 device-info reply (21-byte form)."""
+    if len(frame) < 21 or frame[2] != CMD_DEVICE_INFO:
+        raise ValueError(f"Not an MC5000 device info frame: {frame.hex()}")
+    code = frame[4:10].decode("ascii", errors="replace")
+    sixteen = frame[4:20].hex()
+    return Mc5000DeviceInfo(
+        model_code=code,
+        firmware=f"{frame[15]}.{frame[16]:02d}",
+        hardware=sixteen[27:28],
+    )
+
+
+def device_info_payload(address: str) -> bytes:
+    """0x57 payload: the charger's Bluetooth address, byte-reversed."""
+    parts = address.split(":")
+    if len(parts) != 6:
+        raise ValueError(f"Need a Bluetooth MAC address, got {address!r}")
+    payload = bytearray(17)
+    for i, part in enumerate(reversed(parts)):
+        payload[1 + i] = int(part, 16)
+    return bytes(payload)
+
+
 class Mc5000(SkyRcDevice[Mc5000State]):
     _model = "MC5000"
 
@@ -246,6 +329,52 @@ class Mc5000(SkyRcDevice[Mc5000State]):
         if response is None or len(response) < 5 or response[4] != 1:
             raise BleakError("MC5000 rejected or did not acknowledge the stop")
 
+    async def get_settings(self) -> Mc5000Settings | None:
+        """Read the system settings (None if the charger doesn't answer)."""
+        frame = await self._request(CMD_GET_SETTINGS, [0x04])
+        if frame is None:
+            return None
+        try:
+            return parse_settings(frame)
+        except ValueError as error:
+            _LOGGER.warning("%s: %s", self.name, error)
+            return None
+
+    async def set_settings(self, settings: Mc5000Settings) -> bool:
+        """Write the system settings; True if the charger acknowledged."""
+        frame = await self._request(CMD_SET_SETTINGS, build_settings_payload(settings))
+        return bool(frame and len(frame) > 4 and frame[4] == 1)
+
+    async def get_usb_status(self) -> Mc5000UsbStatus | None:
+        """Read the USB-C PD port status."""
+        frame = await self._request(CMD_USB_STATUS, [0x00])
+        if frame is None:
+            return None
+        try:
+            return parse_usb_status(frame)
+        except ValueError as error:
+            _LOGGER.warning("%s: %s", self.name, error)
+            return None
+
+    async def get_device_info(self) -> Mc5000DeviceInfo | None:
+        """Read the model code and firmware version.
+
+        Needs the charger's MAC address; on platforms that hide it (macOS)
+        this returns None.
+        """
+        try:
+            payload = device_info_payload(self.address)
+        except ValueError:
+            return None
+        frame = await self._request(CMD_DEVICE_INFO, payload)
+        if frame is None:
+            return None
+        try:
+            return parse_device_info(frame)
+        except ValueError as error:
+            _LOGGER.warning("%s: %s", self.name, error)
+            return None
+
     async def _request(
         self,
         command: int,
@@ -310,7 +439,8 @@ class Mc5000(SkyRcDevice[Mc5000State]):
                 _LOGGER.warning("%s: %s", self.name, error)
             else:
                 self._state.channels[channel] = data
-        elif command not in (CMD_HELLO, CMD_START_PROGRAM, CMD_STOP):
+        elif command not in (CMD_HELLO, CMD_START_PROGRAM, CMD_STOP, CMD_DEVICE_INFO,
+                             CMD_SET_SETTINGS, CMD_GET_SETTINGS, CMD_USB_STATUS):
             _LOGGER.debug("%s: Unhandled packet type 0x%02x", self.name, command)
         if command == self._expected_response_command:
             self._last_response = frame

@@ -17,9 +17,12 @@ from .models import (
     Mc3000VoltageCurveData,
     Mc5000BatteryType,
     Mc5000ChannelData,
+    Mc5000DeviceInfo,
     Mc5000Operation,
     Mc5000Program,
+    Mc5000Settings,
     Mc5000State,
+    Mc5000UsbStatus,
 )
 
 __all__ = [
@@ -38,6 +41,9 @@ __all__ = [
     "Mc5000",
     "Mc5000BatteryType",
     "Mc5000ChannelData",
+    "Mc5000DeviceInfo",
+    "Mc5000Settings",
+    "Mc5000UsbStatus",
     "Mc5000Operation",
     "Mc5000Program",
     "Mc5000State",
