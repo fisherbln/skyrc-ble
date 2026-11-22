@@ -406,3 +406,4 @@ class Mc5000DeviceInfo:
     model_code: str  # "100214" for the MC5000
     firmware: str  # e.g. "2.02"
     hardware: str  # e.g. "2"
+    serial_code: str = ""  # 32 hex chars; what SkyRC's update server is asked about

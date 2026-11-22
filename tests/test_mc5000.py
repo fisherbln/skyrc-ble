@@ -212,6 +212,7 @@ def test_device_info():
     info = parse_device_info(DEVICE_INFO_FRAME)
     assert info.model_code == "100214"
     assert info.firmware == "2.02" and info.hardware == "2"
+    assert info.serial_code == "313030323134040000000002020200ce"
     assert device_info_payload("DC:23:53:64:36:40").hex(" ") == (
         "00 40 36 64 53 23 dc 00 00 00 00 00 00 00 00 00 00"
     )

@@ -249,6 +249,7 @@ def parse_device_info(frame: bytes) -> Mc5000DeviceInfo:
         model_code=code,
         firmware=f"{frame[15]}.{frame[16]:02d}",
         hardware=sixteen[27:28],
+        serial_code=sixteen,
     )
 
 
